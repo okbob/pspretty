@@ -28,7 +28,7 @@ static bool		force8bit;
  * Keywords table, should be sorted.
  */
 KeywordPair keywords[] = {
-  { k_AND, "and", false },
+  { k_AND, "and", true },
   { k_AS, "as", false },
   { k_ASC, "asc", false },
   { k_BY, "by", false },
@@ -41,7 +41,7 @@ KeywordPair keywords[] = {
   { k_INSERT, "insert", false },
   { k_INTO, "into", true },
   { k_LIMIT, "limit", true },
-  { k_OR, "or", false },
+  { k_OR, "or", true },
   { k_ORDER, "order", false },
   { k_ORDER_BY, "order by", true },
   { k_SELECT, "select", true },

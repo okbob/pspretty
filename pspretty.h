@@ -74,7 +74,9 @@ typedef enum
 	n_expr,
 	n_named_expr,
 	n_labeled_expr,
-	n_list
+	n_list,
+	n_logical_and,
+	n_logical_or
 } NodeType;
 
 typedef struct _node

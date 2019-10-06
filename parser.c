@@ -236,12 +236,74 @@ is_expr(bool *error)
 		}
 
 		push_token(_t);
-
 		return result;
 	}
 
 	return NULL;
 }
+
+static Node *
+is_expr_or_lexpr_and_only(bool *error)
+{
+	Node	*result;
+
+	if (result = is_expr(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type == tt_keyword && t.value == k_AND)
+		{
+			Node   *expr = new_node_str(n_logical_and, _t);
+
+			expr->value = result;
+			if (expr->other = is_expr_or_lexpr_and_only(error))
+				return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+		return result;
+	}
+}
+
+static Node *
+is_expr_or_lexpr(bool *error)
+{
+	Node	*result;
+
+	if (result = is_expr_or_lexpr_and_only(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type == tt_keyword && t.value == k_OR)
+		{
+			Node   *expr = new_node_str(n_logical_or, _t);
+
+			expr->value = result;
+			if (expr->other = is_expr_or_lexpr(error))
+				return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+		return result;
+	}
+}
+
 
 static Node *
 is_expr_in_parenthesis(bool *error)
@@ -258,7 +320,7 @@ is_expr_in_parenthesis(bool *error)
 		return false;
 	}
 
-	if (!(expr = is_expr(error)))
+	if (!(expr = is_expr_or_lexpr(error)))
 		return NULL;
 	ON_ERROR_RETURN();
 
@@ -286,7 +348,7 @@ is_expr_list(bool *error)
 {
 	Node   *expr;
 
-	if (expr = is_expr(error))
+	if (expr = is_expr_or_lexpr(error))
 	{
 		Token	t, *_t;
 		Node   *result;
@@ -364,7 +426,7 @@ is_labeled_expr_list(bool *error)
 
 	if (!node)
 	{
-		node = is_expr(error);
+		node = is_expr_or_lexpr(error);
 		ON_ERROR_RETURN();
 	}
 
@@ -449,7 +511,7 @@ is_named_expr_list(bool *error)
 	node = is_name(error);
 	ON_ERROR_RETURN();
 
-	expr = is_expr(error);
+	expr = is_expr_or_lexpr(error);
 	ON_ERROR_RETURN();
 
 	if (node)
@@ -674,6 +736,8 @@ debug_display_node(Node *node, int indent)
 			break;
 
 		case n_expr:
+		case n_logical_and:
+		case n_logical_or:
 			fprintf(stderr, "%s", node->parenthesis ? "(" : "");
 			fprintf(stderr, "\"%.*s\"\n", node->bytes, node->str);
 			debug_display_node(node->value, indent + 4);
