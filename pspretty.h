@@ -64,10 +64,45 @@ typedef enum
 	k_WITH,
 } KeywordValue;
 
+typedef enum
+{
+	n_numeric,
+	n_string,
+	n_function,
+	n_ident,
+	n_star,
+	n_expr,
+	n_named_expr,
+	n_labeled_expr,
+	n_list
+} NodeType;
+
+typedef struct _node
+{
+	NodeType	type;
+	struct _node *value;
+	struct _node *other;
+	char   *str;
+	int		bytes;
+	bool	negative;
+	bool	parenthesis;
+} Node;
+
+typedef struct _nodeAllocator
+{
+	Node	   *nodes;
+	int			size;
+	int			used;
+	struct _nodeAllocator *next;
+} NodeAllocator;
+
 extern void init_lexer(char *str, bool _force8bit);
 extern Token *next_token(Token *token);
 extern void push_token(Token *token);
 extern void debug_print_token(Token *token);
-extern bool parser(char *str, bool force8bit);
+extern Node *parser(char *str, bool force8bit);
+extern void out_of_memory();
+
+extern void debug_display_node(Node *node, int indent);
 
 #endif

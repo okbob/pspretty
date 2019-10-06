@@ -154,6 +154,7 @@ is_operator(int c)
 		case '>':
 		case '=':
 		case '!':
+		case '|':
 			return true;
 	}
 

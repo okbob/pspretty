@@ -1,25 +1,55 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "pspretty.h"
 
-static bool is_signed_operand(bool *error);
-static bool is_expr_in_parenthesis(bool *error);
-static bool is_function_args(bool *error);
+static Node * is_signed_operand(bool *error);
+static Node * is_expr_in_parenthesis(bool *error);
+static Node * is_function_args(bool *error);
 
-#define	ON_ERROR_RETURN()			do { if (*error) { return 0;} } while (0)
-#define	ON_EMPTY_RETURN_ERROR()		do { if (!_t) { *error = 1; return 0; }} while (0)
-#define	RETURN_ERROR()				do { *error = 1; return 0; } while (0)
+static Node * new_node();
+
+
+#define	ON_ERROR_RETURN()			do { if (*error) { return NULL;} } while (0)
+#define	ON_EMPTY_RETURN_ERROR()		do { if (!_t) { *error = 1; return NULL; }} while (0)
+#define	RETURN_ERROR()				do { *error = 1; return NULL; } while (0)
+
+NodeAllocator	   *root_allocator;
+NodeAllocator	   *current_allocator;
+
+
+static Node *
+new_node_value(NodeType type, Node *value)
+{
+	Node *result = new_node();
+
+	result->type = type;
+	result->value = value;
+
+	return result;
+}
+
+static Node *
+new_node_str(NodeType type, Token *token)
+{
+	Node *result = new_node();
+
+	result->type = type;
+	result->str = token->str;
+	result->bytes = token->bytes;
+
+	return result;
+}
 
 /*
  * ident.ident.ident[.ident ...]
  *
  */
-static bool
+static Node *
 is_qualified_ident(bool *error)
 {
 	Token	t, *_t;
-	bool	result = true;
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
@@ -27,33 +57,44 @@ is_qualified_ident(bool *error)
 	if (t.type == tt_ident || (t.type == tt_keyword && !t.reserved))
 	{
 		Token	t2, *_t2;
+		Node	*_node;
+		bool	revert = false;
 
 		_t2 = next_token(&t2);
 		ON_EMPTY_RETURN_ERROR();
 
 		if (t2.type == tt_other && t2.value == '.')
 		{
-			result = is_qualified_ident(error);
-			ON_ERROR_RETURN();
+			Node   *other;
 
-			if (result)
-				return true;
+			other = is_qualified_ident(error);
+			ON_ERROR_RETURN();
+			if (other)
+			{
+				/* allocation is done in last moment, because there is not free */
+				Node   *result = new_node_str(n_ident, _t);
+
+				result->other = other;
+				return result;
+			}
+			else
+				revert = true;
 		}
 
 		push_token(_t2);
-		if (result)
-			return true;
+		if (!revert)
+			return new_node_str(n_ident, _t);
 	}
 
 	push_token(_t);
-	return false;
+	return NULL;
 }
 
 /*
  * [ ident.ident.ident[.ident ...]. ] *
  *
  */
-static bool
+static Node *
 is_qualified_star(bool *error)
 {
 	Token	t, *_t;
@@ -63,7 +104,7 @@ is_qualified_star(bool *error)
 
 	if (t.type == tt_operator && t.bytes == 1 && strncmp(t.str, "*", 1) == 0)
 	{
-		return true;
+		return new_node_str(n_star, _t);
 	}
 	else if (t.type == tt_ident || (t.type == tt_keyword && !t.reserved))
 	{
@@ -74,8 +115,14 @@ is_qualified_star(bool *error)
 
 		if (t2.type == tt_other && t2.value == '.')
 		{
-			if (is_qualified_star(error))
-				return true;
+			Node   *result;
+
+			result = new_node_str(n_star, _t);
+			if(result->other = is_qualified_star(error))
+			{
+				return result;
+			}
+
 			ON_ERROR_RETURN();
 		}
 
@@ -83,47 +130,54 @@ is_qualified_star(bool *error)
 	}
 
 	push_token(_t);
-	return false;
+	return NULL;
 }
 
-static bool
+static Node *
 is_operand(bool *error)
 {
 	Token	t, *_t;
+	Node   *result;
 
-	if (is_signed_operand(error))
-		return true;
+	if (result = is_signed_operand(error))
+		return result;
 	ON_ERROR_RETURN();
 
-	if (is_expr_in_parenthesis(error))
-		return true;
+	if (result = is_expr_in_parenthesis(error))
+		return result;
 	ON_ERROR_RETURN();
 
-	if (is_qualified_ident(error))
+	if (result = is_qualified_ident(error))
 	{
-		(void) is_function_args(error);
-		ON_ERROR_RETURN();
+		Node   *fx;
 
-		return true;
+		fx = is_function_args(error);
+		ON_ERROR_RETURN();
+		if (fx)
+		{
+			/* name is in other field */
+			fx->other = result;
+			return fx;
+		}
+
+		return result;
 	}
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
 
 	if (t.type == tt_numeric)
-		return true;
-	else if (t.type == tt_ident)
-		return true;
+		return new_node_str(n_numeric, _t);
 	else if (t.type == tt_string)
-		return true;
+		return new_node_str(n_string, _t);
 	else if (t.type == tt_keyword && !t.reserved)
-		return true;
+		return new_node_str(n_string, _t);
 
 	push_token(_t);
-	return false;
+	return NULL;
 }
 
-static bool
+static Node *
 is_signed_operand(bool *error)
 {
 	Token	t, *_t;
@@ -134,27 +188,33 @@ is_signed_operand(bool *error)
 	if (_t->type == tt_operator && 
 		((strncmp(t.str, "+", 1) == 0 || strncmp(t.str, "-", 1) == 0)))
 	{
-		if (is_operand(error))
-			return true;
+		Node	*result;
 
-		push_token(_t);
-		return false;
+		result = is_operand(error);
+		ON_ERROR_RETURN();
+
+		if (result)
+		{
+			if (strncmp(t.str, "-", 1) == 0)
+				result->negative = !result->negative;
+			return result;
+		}
 	}
-	else
-	{
-		push_token(_t);
-		return false;
-	}
+
+	push_token(_t);
+	return NULL;
 }
 
 /*
  * Operand | Operand op expr
  *
  */
-static bool
+static Node *
 is_expr(bool *error)
 {
-	if (is_operand(error))
+	Node   *result;
+
+	if (result = is_operand(error))
 	{
 		Token	t, *_t;
 
@@ -165,23 +225,29 @@ is_expr(bool *error)
 
 		if (t.type == tt_operator)
 		{
-			if (is_expr(error))
-				return true;
+			Node   *expr = new_node_str(n_expr, _t);
+
+			expr->value = result;
+
+			if (expr->other = is_expr(error))
+				return expr;
 
 			RETURN_ERROR();
 		}
 
 		push_token(_t);
-		return true;
+
+		return result;
 	}
 
-	return false;
+	return NULL;
 }
 
-static bool
+static Node *
 is_expr_in_parenthesis(bool *error)
 {
 	Token	t, *_t;
+	Node   *expr;
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
@@ -192,8 +258,9 @@ is_expr_in_parenthesis(bool *error)
 		return false;
 	}
 
-	if (!is_expr(error))
-		RETURN_ERROR();
+	if (!(expr = is_expr(error)))
+		return NULL;
+	ON_ERROR_RETURN();
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
@@ -204,40 +271,52 @@ is_expr_in_parenthesis(bool *error)
 		RETURN_ERROR();
 	}
 
-	return true;
+	expr->parenthesis = true;
+	return expr;
 }
 
 /*
  * expr [, expr ...]
  *
+ * returns list of expr nodes.
+ *
  */
-static bool
+static Node *
 is_expr_list(bool *error)
 {
-	if (is_expr(error))
+	Node   *expr;
+
+	if (expr = is_expr(error))
 	{
 		Token	t, *_t;
+		Node   *result;
 
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
+		result = new_node_value(n_expr, expr);
+
 		if (t.type == tt_comma)
 		{
-			return is_expr_list(error);
+			if (result->other = is_expr_list(error))
+				return result;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
 		}
 
 		push_token(_t);
-		return true;
+		return result;
 	}
 
-	return false;
+	return NULL;
 }
 
 /*
  * [ AS] label
  *
  */
-static bool
+static Node *
 is_label(bool *error)
 {
 	Token	t, *_t;
@@ -254,64 +333,82 @@ is_label(bool *error)
 
 		if (t2.type == tt_ident ||
 				(t2.type == tt_keyword && !t2.reserved))
-		{
-			return true;
-		}
+			return new_node_str(n_labeled_expr, _t2);
 
 		RETURN_ERROR();
 	}
 
 	if (t.type == tt_ident ||
 			(t.type == tt_keyword && !t.reserved))
-	{
-		return true;
-	}
+		return new_node_str(n_labeled_expr, _t);
 
 	push_token(_t);
 
-	return false;
+	return NULL;
 }
 
 /*
  * expr [ [AS] label ] [, expr [ [AS] label ] ...]
  *
+ * returns list of expr or labeled expressions
+ *
  */
-static bool
+static Node *
 is_labeled_expr_list(bool *error)
 {
 	Token	t, *_t;
-	bool	is_star = false;
+	Node   *node;
 
-	is_star = is_qualified_star(error);
+	node = is_qualified_star(error);
 	ON_ERROR_RETURN();
 
-	if (is_star || is_expr(error))
+	if (!node)
+	{
+		node = is_expr(error);
+		ON_ERROR_RETURN();
+	}
+
+	if (node)
 	{
 		Token	t, *_t;
+		Node   *label;
+		Node   *result;
 
-		(void) is_label(error);
+		label = is_label(error);
 		ON_ERROR_RETURN();
+
+		if (label)
+		{
+			label->value = node;
+			node = label;
+		}
+
+		result = new_node_value(n_list, node);
 
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
 		if (t.type == tt_comma)
 		{
-			return is_labeled_expr_list(error);
+			if (result->other = is_labeled_expr_list(error))
+				return result;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
 		}
 
 		push_token(_t);
-		return true;
+		return result;
 	}
 
-	return false;
+	return NULL;
 }
 
 /*
  * name => 
  *
  */
-static bool
+static Node *
 is_name(bool *error)
 {
 	Token	t, *_t;
@@ -328,53 +425,69 @@ is_name(bool *error)
 		ON_EMPTY_RETURN_ERROR();
 
 		if (t2.type == tt_named_expr)
-		{
-			return true;
-		}
+			return new_node_str(n_named_expr, _t);
 
 		push_token(_t2);
 	}
 
 	push_token(_t);
-	return false;
+	return NULL;
 }
 
 /*
  * [ name => ] value p [, name => ] value ... ]
  *
+ * Retuns list of named expr or expr
+ *
  */
-static bool
+static Node *
 is_named_expr_list(bool *error)
 {
-	bool	is_named;
+	Node   *node;
+	Node   *expr;
 
-	is_named = is_name(error);
+	node = is_name(error);
 	ON_ERROR_RETURN();
 
-	if (is_expr(error))
+	expr = is_expr(error);
+	ON_ERROR_RETURN();
+
+	if (node)
+		node->value = expr;
+	else
+		node = expr;
+
+	if (node)
 	{
 		Token	t, *_t;
+		Node   *result;
 
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
+		result = new_node_value(n_list, node);
+
 		if (t.type == tt_comma)
 		{
-			return is_named_expr_list(error);
+			if (result->other = is_named_expr_list(error))
+				return result;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
 		}
 
 		push_token(_t);
-		return true;
+		return result;
 	}
 
-	return false;
+	return NULL;
 }
 
 /*
  * (), ( [ name => ] value [ , ... ] )
  *
  */
-static bool
+static Node *
 is_function_args(bool *error)
 {
 	Token	t, *_t;
@@ -386,35 +499,108 @@ is_function_args(bool *error)
 	{
 		Token	t2, *_t2;
 		bool	has_args;
+		Node   *result;
 
-		has_args = is_named_expr_list(error);
+		result = new_node_value(n_function,
+								is_named_expr_list(error));
 		ON_ERROR_RETURN();
 
 		_t2 = next_token(&t2);
 		ON_EMPTY_RETURN_ERROR();
 
 		if (t2.type == tt_rparent)
-			return true;
+			return result;
 
+		fprintf(stderr, "unclosed parenthesis\n");
 		RETURN_ERROR();
 	}
 
 	push_token(_t);
-	return false;
+	return NULL;
 }
 
+static void
+debug_display_qident(Node *node)
+{
+	bool first = true;
+
+	while (node)
+	{
+		if (!first)
+			fprintf(stderr, ".");
+		else
+			first = false;
+
+		fprintf(stderr, "%.*s", node->bytes, node->str);
+		node = node->other;
+	}
+}
+
+/*
+ * For effective work with nodes, we alloc memory in one block
+ */
+static NodeAllocator *
+node_allocator_init_block()
+{
+	NodeAllocator *na = malloc(sizeof(NodeAllocator));
+
+	if (!na)
+		out_of_memory();
+
+	na->size = 1000;		/* 10000 nodes */
+	na->nodes = malloc(na->size * sizeof(Node));
+	if (!na->nodes)
+		out_of_memory();
+
+	na->used = 0;
+	memset(na->nodes, 0, na->size * sizeof(Node));
+
+	return na;
+}
+
+static void
+init_node_allocator()
+{
+	root_allocator = node_allocator_init_block();
+	current_allocator = root_allocator;
+}
+
+static Node *
+new_node()
+{
+	Node *result;
+
+	if (current_allocator->used >= current_allocator->size)
+	{
+		NodeAllocator *n = node_allocator_init_block();
+
+		current_allocator->next = n;
+		current_allocator = n;
+	}
+
+	result = &current_allocator->nodes[current_allocator->used++];
+	return result;
+}
+
+/******************************************************
+ *  Public API
+ *
+ ******************************************************/
+ 
 /*
  * Returns true, when there are not any syntax error
  *
  */
-bool
+Node *
 parser(char *str, bool force8bit)
 {
 	bool	error;
+	Node   *result = NULL;
 
 	init_lexer(str, force8bit);
+	init_node_allocator();
 
-	fprintf(stderr, "is_labeled_expr_list %s\n", is_labeled_expr_list(&error) ? "yes" : "no");
+	result = is_labeled_expr_list(&error);
 
 	if (!error)
 	{
@@ -424,14 +610,80 @@ parser(char *str, bool force8bit)
 		if (!(_t && t.type == tt_EOF))
 		{
 			fprintf(stderr, "syntax error (not on the end)\n");
-			return false;
+			return NULL;
 		}
 	}
 	else
 	{
 		fprintf(stderr, "syntax error (parsing error)\n");
-		return false;
+		return NULL;
 	}
 
-	return true;
+	return result;
+}
+
+void
+debug_display_node(Node *node, int indent)
+{
+	if (!node)
+	{
+		fprintf(stderr, "%*s%s", indent, "", "node is null\n");
+		return;
+	}
+
+	fprintf(stderr, "%*s", indent, "");
+	fprintf(stderr, "%s", node->negative ? "-" : "");
+
+	switch (node->type)
+	{
+		case n_numeric:
+		case n_string:
+			fprintf(stderr, "%.*s", node->bytes, node->str);
+			break;
+
+		case n_ident:
+		case n_star:
+			debug_display_qident(node);
+			break;
+
+		case n_function:
+			debug_display_qident(node->other);
+			fprintf(stderr, "(\n");
+			debug_display_node(node->value, indent + 4);
+			fprintf(stderr, "%*s)", indent, "");
+			break;
+
+		case n_named_expr:
+			fprintf(stderr, "%.*s => \n", node->bytes, node->str);
+			debug_display_node(node->value, indent + 4);
+			break;
+
+		case n_labeled_expr:
+			fprintf(stderr, "%.*s AS\n", node->bytes, node->str);
+			debug_display_node(node->value, indent + 4);
+			break;
+
+		case n_list:
+			fprintf(stderr, "%*s{\n", indent, "");
+			do
+			{
+				debug_display_node(node->value, indent + 4);
+				node = node->other;
+			} while (node);
+			fprintf(stderr, "%*s}", indent, "");
+			break;
+
+		case n_expr:
+			fprintf(stderr, "%s", node->parenthesis ? "(" : "");
+			fprintf(stderr, "\"%.*s\"\n", node->bytes, node->str);
+			debug_display_node(node->value, indent + 4);
+			debug_display_node(node->other, indent + 4);
+			fprintf(stderr, "%*s%s", indent, "", node->parenthesis ? ")" : "");
+			break;
+
+		default:
+			fprintf(stderr, "unknown type: %d\n", node->type);
+	}
+
+	fprintf(stderr, "\n");
 }

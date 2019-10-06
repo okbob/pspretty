@@ -1,9 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "pspretty.h"
 
-static void
+
+void
 out_of_memory()
 {
 	fprintf(stderr, "out of memory\n");
@@ -60,9 +62,13 @@ int
 main(int argc, char *argv[])
 {
 	char   *str;
+	Node   *node;
 
 	str = readall(stdin);
-	(void) parser(str, false);
+
+	node = parser(str, false);
+
+	debug_display_node(node, 0);
 
 	return 0;
 }
