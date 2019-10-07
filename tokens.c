@@ -34,13 +34,22 @@ KeywordPair keywords[] = {
   { k_BY, "by", false },
   { k_DELETE, "delete", false },
   { k_DESC, "desc", false },
+  { k_EXISTS, "exists", false },
   { k_FROM, "from", true },
   { k_GROUP, "group", false },
   { k_GROUP_BY, "group by", true },
   { k_HAVING, "having", true },
+  { k_IN, "in", true },
   { k_INSERT, "insert", false },
   { k_INTO, "into", true },
+  { k_IS, "is", true },
+  { k_IS_NOT, "is not", true },
+  { k_IS_NOT_NULL, "is not null", true },
+  { k_IS_NULL, "is null", true },
   { k_LIMIT, "limit", true },
+  { k_NOT, "not", true },
+  { k_NOT_IN, "not in", true },
+  { k_NULL, "null", true },
   { k_OR, "or", true },
   { k_ORDER, "order", false },
   { k_ORDER_BY, "order by", true },
@@ -376,6 +385,12 @@ _next_token(Token *token)
 			}
 		}
 	}
+	else if (c == ';')
+	{
+		token->type = tt_semicolon;
+		token->bytes = 1;
+		token->value = ';';
+	}
 	else if (c == ',')
 	{
 		token->type = tt_comma;
@@ -634,7 +649,7 @@ check_keyword_table()
 
 		if (kp->value != i + 256)
 		{
-			fprintf(stderr, "unexpected keyword value (%d expected %d) for keyword \"%s\"\n", kp->value, i, kp->str);
+			fprintf(stderr, "unexpected keyword value (%d expected %d) for keyword \"%s\"\n", kp->value, i + 256, kp->str);
 			exit(1);
 		}
 
@@ -681,19 +696,64 @@ push_token(Token *token)
 }
 
 static Token *
-possible_multiverb2(Token *token, KeywordValue required, KeywordValue newval)
+possible_multiverb2(Token *token,
+					KeywordValue required,
+					KeywordValue newval)
 {
 	Token	t, *_t;
 
 	_t = next_token(&t);
 	if (!_t)
-		return NULL;
+		return token;
 
-	if (_t->type == tt_keyword && _t->value == required)
+	if (t.type == tt_keyword && t.value == required)
 	{
 		token->value = newval;
 		token->reserved = keywords[token->value - 256].reserved;
+		token->str = keywords[token->value - 256].str;
+		token->bytes = strlen(token->str);
 		return token;
+	}
+
+	push_token(_t);
+
+	return token;
+}
+
+static Token *
+possible_multiverb3(Token *token,
+					KeywordValue required,
+					KeywordValue required2,
+					KeywordValue newval,
+					bool *changed)
+{
+	Token	t, *_t;
+
+	*changed = false;
+
+	_t = next_token(&t);
+	if (!_t)
+		return token;
+
+	if (t.type == tt_keyword && t.value == required)
+	{
+		Token	t2, *_t2;
+
+		_t2 = next_token(&t2);
+		if (_t2)
+		{
+			if (t2.type == tt_keyword && t2.value == required2)
+			{
+				token->value = newval;
+				token->reserved = keywords[token->value - 256].reserved;
+				token->str = keywords[token->value - 256].str;
+				token->bytes = strlen(token->str);
+				*changed = true;
+				return token;
+			}
+
+			push_token(_t2);
+		}
 	}
 
 	push_token(_t);
@@ -708,15 +768,27 @@ next_token(Token *token)
 	if (tokenidx > 0)
 		memcpy(token, &tokenbuf[--tokenidx], sizeof(Token));
 	else
+	{
 		token = _next_token(token);
 
-	/* possible multiverbs like GROUP BY, ORDER BY */
-	if (token->type == tt_keyword)
-	{
-		if (token->value == k_GROUP)
-			token = possible_multiverb2(token, k_BY, k_GROUP_BY);
-		else if (token->value == k_ORDER)
-			token = possible_multiverb2(token, k_BY, k_ORDER_BY);
+		/* possible multiverbs like GROUP BY, ORDER BY */
+		if (token->type == tt_keyword)
+		{
+			if (token->value == k_GROUP)
+				token = possible_multiverb2(token, k_BY, k_GROUP_BY);
+			else if (token->value == k_ORDER)
+				token = possible_multiverb2(token, k_BY, k_ORDER_BY);
+			else if (token->value == k_NOT)
+				token = possible_multiverb2(token, k_IN, k_NOT_IN);
+			else if (token->value == k_IS)
+			{
+				bool	changed;
+
+				token = possible_multiverb3(token, k_NOT, k_NULL, k_IS_NOT_NULL, &changed);
+				if (!changed)
+					token = possible_multiverb2(token, k_NULL, k_IS_NULL);
+			}
+		}
 	}
 
 	return token;

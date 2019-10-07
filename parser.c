@@ -4,9 +4,12 @@
 
 #include "pspretty.h"
 
-static Node * is_signed_operand(bool *error);
 static Node * is_expr_in_parenthesis(bool *error);
 static Node * is_function_args(bool *error);
+static Node * is_query(bool *error);
+
+static Node * is_operand(bool *error);
+
 
 static Node * new_node();
 
@@ -40,6 +43,12 @@ new_node_str(NodeType type, Token *token)
 	result->bytes = token->bytes;
 
 	return result;
+}
+
+static bool
+is_keyword(Token *token, KeywordValue k)
+{
+	return token->type == tt_keyword && token->value == k;
 }
 
 /*
@@ -133,49 +142,6 @@ is_qualified_star(bool *error)
 	return NULL;
 }
 
-static Node *
-is_operand(bool *error)
-{
-	Token	t, *_t;
-	Node   *result;
-
-	if (result = is_signed_operand(error))
-		return result;
-	ON_ERROR_RETURN();
-
-	if (result = is_expr_in_parenthesis(error))
-		return result;
-	ON_ERROR_RETURN();
-
-	if (result = is_qualified_ident(error))
-	{
-		Node   *fx;
-
-		fx = is_function_args(error);
-		ON_ERROR_RETURN();
-		if (fx)
-		{
-			/* name is in other field */
-			fx->other = result;
-			return fx;
-		}
-
-		return result;
-	}
-
-	_t = next_token(&t);
-	ON_EMPTY_RETURN_ERROR();
-
-	if (t.type == tt_numeric)
-		return new_node_str(n_numeric, _t);
-	else if (t.type == tt_string)
-		return new_node_str(n_string, _t);
-	else if (t.type == tt_keyword && !t.reserved)
-		return new_node_str(n_string, _t);
-
-	push_token(_t);
-	return NULL;
-}
 
 static Node *
 is_signed_operand(bool *error)
@@ -206,13 +172,129 @@ is_signed_operand(bool *error)
 }
 
 /*
+ * NOT operand
+ *
+ */
+static Node *
+is_negated_operand(bool *error)
+{
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_NOT))
+	{
+		Node	*result;
+
+		result = is_operand(error);
+		ON_ERROR_RETURN();
+
+		if (result)
+		{
+			result->negate = true;
+			return result;
+		}
+	}
+
+	push_token(_t);
+	return NULL;
+}
+
+static Node *
+is_operand(bool *error)
+{
+	Token	t, *_t;
+	Node   *result;
+
+	if (result = is_signed_operand(error))
+		return result;
+	ON_ERROR_RETURN();
+
+	if (result = is_negated_operand(error))
+		return result;
+	ON_ERROR_RETURN();
+
+	if (result = is_expr_in_parenthesis(error))
+		return result;
+	ON_ERROR_RETURN();
+
+	if (result = is_qualified_ident(error))
+	{
+		Node   *fx;
+
+		fx = is_function_args(error);
+		ON_ERROR_RETURN();
+		if (fx)
+		{
+			/* name is in other field */
+			fx->other = result;
+			return fx;
+		}
+
+		return result;
+	}
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_NULL))
+		return new_node_str(n_null, _t);
+	else if (t.type == tt_numeric)
+		return new_node_str(n_numeric, _t);
+	else if (t.type == tt_string)
+		return new_node_str(n_string, _t);
+	else if (t.type == tt_keyword && !t.reserved)
+		return new_node_str(n_string, _t);
+
+	push_token(_t);
+	return NULL;
+}
+
+
+/*
  * Operand | Operand op expr
  *
  */
 static Node *
-is_expr(bool *error)
+is_expr_00(bool *error)
 {
+	Token	t, *_t;
 	Node   *result;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_EXISTS))
+	{
+		Token	t2, *_t2;
+
+		_t2 = next_token(&t2);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t2.type == tt_lparent)
+		{
+			Node	*query;
+			push_token(_t2);
+
+			query = is_expr_in_parenthesis(error);
+			ON_ERROR_RETURN();
+
+			if (query->type == n_query)
+			{
+				result = new_node_str(n_expr, _t);
+				result->value = query;
+
+				return result;
+			}
+
+			RETURN_ERROR();
+		}
+
+		push_token(_t2);
+	}
+
+	push_token(_t);
 
 	if (result = is_operand(error))
 	{
@@ -229,7 +311,7 @@ is_expr(bool *error)
 
 			expr->value = result;
 
-			if (expr->other = is_expr(error))
+			if (expr->other = is_expr_00(error))
 				return expr;
 
 			RETURN_ERROR();
@@ -242,12 +324,16 @@ is_expr(bool *error)
 	return NULL;
 }
 
+/*
+ * Add expr IS NULL, expr IS NOT NULL
+ *
+ */
 static Node *
-is_expr_or_lexpr_and_only(bool *error)
+is_expr_01(bool *error)
 {
 	Node	*result;
 
-	if (result = is_expr(error))
+	if (result = is_expr_00(error))
 	{
 		Token	t, *_t;
 
@@ -256,12 +342,47 @@ is_expr_or_lexpr_and_only(bool *error)
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t.type == tt_keyword && t.value == k_AND)
+		if (is_keyword(_t, k_IS_NULL) ||
+			is_keyword(_t, k_IS_NOT_NULL))
+		{
+			Node   *expr = new_node_str(is_keyword(_t, k_IS_NULL) ? n_is_null : n_is_not_null, _t);
+
+			expr->value = result;
+			return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+		return result;
+	}
+}
+
+/*
+ * Add operator AND
+ *
+ */
+static Node *
+is_expr_02(bool *error)
+{
+	Node	*result;
+
+	if (result = is_expr_01(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_AND))
 		{
 			Node   *expr = new_node_str(n_logical_and, _t);
 
 			expr->value = result;
-			if (expr->other = is_expr_or_lexpr_and_only(error))
+			if (expr->other = is_expr_02(error))
 				return expr;
 
 			ON_ERROR_RETURN();
@@ -273,12 +394,16 @@ is_expr_or_lexpr_and_only(bool *error)
 	}
 }
 
+/*
+ * Add operator OR
+ *
+ */
 static Node *
-is_expr_or_lexpr(bool *error)
+is_expr_03(bool *error)
 {
 	Node	*result;
 
-	if (result = is_expr_or_lexpr_and_only(error))
+	if (result = is_expr_02(error))
 	{
 		Token	t, *_t;
 
@@ -287,12 +412,12 @@ is_expr_or_lexpr(bool *error)
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t.type == tt_keyword && t.value == k_OR)
+		if (is_keyword(_t, k_OR))
 		{
 			Node   *expr = new_node_str(n_logical_or, _t);
 
 			expr->value = result;
-			if (expr->other = is_expr_or_lexpr(error))
+			if (expr->other = is_expr_03(error))
 				return expr;
 
 			ON_ERROR_RETURN();
@@ -303,6 +428,8 @@ is_expr_or_lexpr(bool *error)
 		return result;
 	}
 }
+
+#define	is_expr_top(e)		is_expr_03(e)
 
 
 static Node *
@@ -310,6 +437,7 @@ is_expr_in_parenthesis(bool *error)
 {
 	Token	t, *_t;
 	Node   *expr;
+	bool	is_subquery = false;
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
@@ -317,12 +445,20 @@ is_expr_in_parenthesis(bool *error)
 	if (t.type != tt_lparent)
 	{
 		push_token(_t);
-		return false;
+		return NULL;
 	}
 
-	if (!(expr = is_expr_or_lexpr(error)))
-		return NULL;
+	expr = is_query(error);
 	ON_ERROR_RETURN();
+
+	if (!expr)
+	{
+		expr = is_expr_top(error);
+		ON_ERROR_RETURN();
+	}
+
+	if (!expr)
+		return NULL;
 
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
@@ -348,7 +484,7 @@ is_expr_list(bool *error)
 {
 	Node   *expr;
 
-	if (expr = is_expr_or_lexpr(error))
+	if (expr = is_expr_top(error))
 	{
 		Token	t, *_t;
 		Node   *result;
@@ -426,7 +562,7 @@ is_labeled_expr_list(bool *error)
 
 	if (!node)
 	{
-		node = is_expr_or_lexpr(error);
+		node = is_expr_top(error);
 		ON_ERROR_RETURN();
 	}
 
@@ -463,6 +599,36 @@ is_labeled_expr_list(bool *error)
 		return result;
 	}
 
+	return NULL;
+}
+
+/*
+ * SELECT labeled_expr_list
+ *
+ */
+static Node *
+is_query(bool *error)
+{
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_SELECT))
+	{
+		Node   *cols = is_labeled_expr_list(error);
+		Node   *result;
+
+		ON_ERROR_RETURN();
+
+		result = new_node();
+		result->type = n_query;
+		result->columns = cols;
+
+		return result;
+	}
+
+	push_token(_t);
 	return NULL;
 }
 
@@ -511,7 +677,7 @@ is_named_expr_list(bool *error)
 	node = is_name(error);
 	ON_ERROR_RETURN();
 
-	expr = is_expr_or_lexpr(error);
+	expr = is_expr_top(error);
 	ON_ERROR_RETURN();
 
 	if (node)
@@ -662,13 +828,18 @@ parser(char *str, bool force8bit)
 	init_lexer(str, force8bit);
 	init_node_allocator();
 
-	result = is_labeled_expr_list(&error);
+	result = is_query(&error);
 
 	if (!error)
 	{
 		Token	t, *_t;
 
 		_t = next_token(&t);
+
+		/* ignore last semicolon */
+		if (_t && t.type == tt_semicolon)
+			_t = next_token(&t);
+
 		if (!(_t && t.type == tt_EOF))
 		{
 			fprintf(stderr, "syntax error (not on the end)\n");
@@ -694,12 +865,14 @@ debug_display_node(Node *node, int indent)
 	}
 
 	fprintf(stderr, "%*s", indent, "");
+	fprintf(stderr, "%s", node->negate ? "NOT " : "");
 	fprintf(stderr, "%s", node->negative ? "-" : "");
 
 	switch (node->type)
 	{
 		case n_numeric:
 		case n_string:
+		case n_null:
 			fprintf(stderr, "%.*s", node->bytes, node->str);
 			break;
 
@@ -735,6 +908,12 @@ debug_display_node(Node *node, int indent)
 			fprintf(stderr, "%*s}", indent, "");
 			break;
 
+		case n_is_null:
+		case n_is_not_null:
+			fprintf(stderr, "%.*s\n", node->bytes, node->str);
+			debug_display_node(node->value, indent + 4);
+			break;
+
 		case n_expr:
 		case n_logical_and:
 		case n_logical_or:
@@ -743,6 +922,14 @@ debug_display_node(Node *node, int indent)
 			debug_display_node(node->value, indent + 4);
 			debug_display_node(node->other, indent + 4);
 			fprintf(stderr, "%*s%s", indent, "", node->parenthesis ? ")" : "");
+			break;
+
+		case n_query:
+			fprintf(stderr, "*** QUERY ***\n");
+			debug_display_node(node->columns, indent + 4);
+			debug_display_node(node->from, indent + 4);
+			fprintf(stderr, "%*s%s", indent, "", "*** query ***");
+
 			break;
 
 		default:

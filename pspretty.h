@@ -21,7 +21,9 @@ typedef enum
 	tt_operator,
 	tt_cast_operator,
 	tt_comma,
-	tt_named_expr
+	tt_named_expr,
+	tt_semicolon,
+	tt_null
 } TokenType;
 
 
@@ -48,13 +50,22 @@ typedef enum
 	k_BY,
 	k_DELETE,
 	k_DESC,
+	k_EXISTS,
 	k_FROM,
 	k_GROUP,
 	k_GROUP_BY,
 	k_HAVING,
+	k_IN,
 	k_INSERT,
 	k_INTO,
+	k_IS,
+	k_IS_NOT,
+	k_IS_NOT_NULL,
+	k_IS_NULL,
 	k_LIMIT,
+	k_NOT,
+	k_NOT_IN,
+	k_NULL,
 	k_OR,
 	k_ORDER,
 	k_ORDER_BY,
@@ -66,6 +77,7 @@ typedef enum
 
 typedef enum
 {
+	n_null,
 	n_numeric,
 	n_string,
 	n_function,
@@ -76,18 +88,36 @@ typedef enum
 	n_labeled_expr,
 	n_list,
 	n_logical_and,
-	n_logical_or
+	n_logical_or,
+	n_is_null,
+	n_is_not_null,
+	n_query,
 } NodeType;
 
 typedef struct _node
 {
 	NodeType	type;
-	struct _node *value;
-	struct _node *other;
-	char   *str;
-	int		bytes;
-	bool	negative;
-	bool	parenthesis;
+	union {
+		struct {
+			struct _node *value;
+			struct _node *other;
+			char   *str;
+			int		bytes;
+			bool	negative;
+			bool	negate;
+			bool	parenthesis;
+		};
+		struct {
+			struct _node *columns;
+			struct _node *from;
+			struct _node *where;
+			struct _node *group_by;
+			struct _node *having;
+			struct _node *order_by;
+			struct _node *offset;
+			struct _node *limit;
+		};
+	};
 } Node;
 
 typedef struct _nodeAllocator
