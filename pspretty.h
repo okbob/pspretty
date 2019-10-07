@@ -92,6 +92,7 @@ typedef enum
 	n_is_null,
 	n_is_not_null,
 	n_query,
+	n_composite
 } NodeType;
 
 typedef struct _node

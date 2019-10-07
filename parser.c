@@ -7,6 +7,8 @@
 static Node * is_expr_in_parenthesis(bool *error);
 static Node * is_function_args(bool *error);
 static Node * is_query(bool *error);
+static Node * is_expr_list(bool *error);
+
 
 static Node * is_operand(bool *error);
 
@@ -432,11 +434,15 @@ is_expr_03(bool *error)
 #define	is_expr_top(e)		is_expr_03(e)
 
 
+/*
+ * parses a) ( expr ) b) (SELECT ...), c (expr, expr, expr, ...)
+ *
+ */
 static Node *
 is_expr_in_parenthesis(bool *error)
 {
 	Token	t, *_t;
-	Node   *expr;
+	Node   *expr, *composite = NULL;
 	bool	is_subquery = false;
 
 	_t = next_token(&t);
@@ -463,11 +469,24 @@ is_expr_in_parenthesis(bool *error)
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
 
+	if (t.type == tt_comma)
+	{
+		composite = new_node_value(n_composite,
+					  new_node_value(n_list, expr));
+		composite->value->other = is_expr_list(error);
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+	}
+
 	if (t.type != tt_rparent)
 	{
 		fprintf(stderr, "unclosed parenthesis\n");
 		RETURN_ERROR();
 	}
+
+	if (composite)
+		return composite;
 
 	expr->parenthesis = true;
 	return expr;
@@ -898,8 +917,14 @@ debug_display_node(Node *node, int indent)
 			debug_display_node(node->value, indent + 4);
 			break;
 
+		case n_composite:
+			fprintf(stderr, "C(\n");
+			debug_display_node(node->value, indent + 4);
+			fprintf(stderr, "%*s%s", indent, "", ")");
+			break;
+
 		case n_list:
-			fprintf(stderr, "%*s{\n", indent, "");
+			fprintf(stderr, "{\n");
 			do
 			{
 				debug_display_node(node->value, indent + 4);
