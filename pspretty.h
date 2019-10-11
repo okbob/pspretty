@@ -29,17 +29,19 @@ typedef enum
 
 typedef struct
 {
-	TokenType	type;
-	int			lineno;		/* line number from start document */
-	char	   *line;		/* ptr to line where this token starts */
-	int			pos;		/* position from start of line */
-	char	   *str;		/* pointr to first char of token */
-	int			bytes;		/* how much bytes */
-	int			value;		/* value of char type token or keyword token */
-	bool		quoted;		/* true, when identifier is quoted */
-	bool		escaped;	/* true, when string is scaped */
-	bool		singleline;	/* true, when comment is singleline */
-	bool		reserved;	/* keywords that cannot be used inside expression */
+	TokenType type;
+	int		lineno;			/* line number from start document */
+	char   *line;			/* ptr to line where this token starts */
+	int		pos;			/* position from start of line */
+	char   *str;			/* pointr to first char of token */
+	int		bytes;			/* how much bytes */
+	int		value;			/* value of char type token or keyword token */
+	bool	quoted;			/* true, when identifier is quoted */
+	bool	escaped;		/* true, when string is scaped */
+	bool	singleline;		/* true, when comment is singleline */
+	bool	reserved;		/* keywords that cannot be used inside expression */
+	bool	natural_join;	/* is natural JOIN */
+	bool	comparing_op;	/* true, when operator is =, <>, <, >, <= or >= */
 } Token;
 
 typedef enum
@@ -47,31 +49,50 @@ typedef enum
 	k_AND = 256,
 	k_AS,
 	k_ASC,
+	k_BETWEEN,
 	k_BY,
+	k_CROSS,
+	k_CROSS_JOIN,
 	k_DELETE,
 	k_DESC,
 	k_EXISTS,
 	k_FALSE,
 	k_FROM,
+	k_FULL,
+	k_FULL_OUTER_JOIN,
 	k_GROUP,
 	k_GROUP_BY,
 	k_HAVING,
+	k_ILIKE,
 	k_IN,
+	k_INNER,
+	k_INNER_JOIN,
 	k_INSERT,
 	k_INTO,
 	k_IS,
 	k_IS_NOT,
 	k_IS_NOT_NULL,
 	k_IS_NULL,
+	k_JOIN,
+	k_LEFT,
+	k_LEFT_OUTER_JOIN,
+	k_LIKE,
 	k_LIMIT,
+	k_NATURAL,
 	k_NOT,
 	k_NOT_IN,
 	k_NULL,
+	k_ON,
 	k_OR,
 	k_ORDER,
 	k_ORDER_BY,
+	k_OUTER,
+	k_OUTER_JOIN,
+	k_RIGHT,
+	k_RIGHT_OUTER_JOIN,
 	k_SELECT,
 	k_TRUE,
+	k_UNKNOWN,
 	k_VALUES,
 	k_WHERE,
 	k_WITH,
@@ -96,8 +117,17 @@ typedef enum
 	n_is_null,
 	n_is_not_null,
 	n_query,
-	n_composite
+	n_composite,
+	n_is
 } NodeType;
+
+typedef enum
+{
+	expr_generic,
+	expr_like,
+	expr_ilike,
+	expr_between
+} SpecialExprType;
 
 typedef struct _node
 {
@@ -111,6 +141,7 @@ typedef struct _node
 			bool	negative;
 			bool	negate;
 			bool	parenthesis;
+			SpecialExprType exprtype;
 		};
 		struct {
 			struct _node *columns;

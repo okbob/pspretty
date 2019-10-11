@@ -31,31 +31,50 @@ KeywordPair keywords[] = {
   { k_AND, "and", true },
   { k_AS, "as", false },
   { k_ASC, "asc", false },
+  { k_BETWEEN, "between", false },
   { k_BY, "by", false },
+  { k_CROSS, "cross", false },
+  { k_CROSS_JOIN, "cross_join", true },
   { k_DELETE, "delete", false },
   { k_DESC, "desc", false },
   { k_EXISTS, "exists", false },
   { k_FALSE, "false", true },
   { k_FROM, "from", true },
+  { k_FULL, "full", false },
+  { k_FULL_OUTER_JOIN, "full outer join", true },
   { k_GROUP, "group", false },
   { k_GROUP_BY, "group by", true },
   { k_HAVING, "having", true },
+  { k_ILIKE, "ilike", false },
   { k_IN, "in", true },
+  { k_INNER,"inner", false },
+  { k_INNER_JOIN, "inner join", true },
   { k_INSERT, "insert", false },
   { k_INTO, "into", true },
   { k_IS, "is", true },
   { k_IS_NOT, "is not", true },
   { k_IS_NOT_NULL, "is not null", true },
   { k_IS_NULL, "is null", true },
+  { k_JOIN, "join", false },
+  { k_LEFT, "left", false },
+  { k_LEFT_OUTER_JOIN, "left outer join", true },
+  { k_LIKE, "like", false },
   { k_LIMIT, "limit", true },
+  { k_NATURAL, "natural", false },
   { k_NOT, "not", true },
   { k_NOT_IN, "not in", true },
   { k_NULL, "null", true },
+  { k_ON, "on", false },
   { k_OR, "or", true },
   { k_ORDER, "order", false },
   { k_ORDER_BY, "order by", true },
+  { k_OUTER, "outer", false },
+  { k_OUTER_JOIN, "outer join", true },
+  { k_RIGHT, "right", false },
+  { k_RIGHT_OUTER_JOIN, "right_outer_join", true },
   { k_SELECT, "select", true },
   { k_TRUE, "true", true },
+  { k_UNKNOWN, "unknown", false },
   { k_VALUES, "values", false },
   { k_WHERE, "where", true },
   { k_WITH, "with", false }
@@ -266,6 +285,16 @@ read_operator(Token *token, int bytes)
 	token->type = tt_operator;
 	token->bytes = bytes;
 
+	if (strncmp(token->str, "=", bytes) == 0 ||
+		strncmp(token->str, "<>", bytes) == 0 ||
+		strncmp(token->str, "<", bytes) == 0 ||
+		strncmp(token->str, ">", bytes) == 0 ||
+		strncmp(token->str, "<=", bytes) == 0 ||
+		strncmp(token->str, ">=", bytes) == 0)
+	{
+		token->comparing_op = true;
+	}
+
 	return token;
 }
 
@@ -315,6 +344,8 @@ _next_token(Token *token)
 	token->singleline = false;
 	token->value = -1;
 	token->reserved = false;
+	token->natural_join = false;
+	token->comparing_op = false;
 
 	if (c >= '0' && c <= '9' || c == '.')
 	{
@@ -700,7 +731,8 @@ push_token(Token *token)
 static Token *
 possible_multiverb2(Token *token,
 					KeywordValue required,
-					KeywordValue newval)
+					KeywordValue newval,
+					bool *changed)
 {
 	Token	t, *_t;
 
@@ -714,13 +746,21 @@ possible_multiverb2(Token *token,
 		token->reserved = keywords[token->value - 256].reserved;
 		token->str = keywords[token->value - 256].str;
 		token->bytes = strlen(token->str);
+
+		if (changed)
+			*changed = true;
+
 		return token;
 	}
 
 	push_token(_t);
 
+	if (changed)
+		*changed = false;
+
 	return token;
 }
+
 
 static Token *
 possible_multiverb3(Token *token,
@@ -730,8 +770,6 @@ possible_multiverb3(Token *token,
 					bool *changed)
 {
 	Token	t, *_t;
-
-	*changed = false;
 
 	_t = next_token(&t);
 	if (!_t)
@@ -750,7 +788,10 @@ possible_multiverb3(Token *token,
 				token->reserved = keywords[token->value - 256].reserved;
 				token->str = keywords[token->value - 256].str;
 				token->bytes = strlen(token->str);
-				*changed = true;
+
+				if (changed)
+					*changed = true;
+
 				return token;
 			}
 
@@ -760,13 +801,17 @@ possible_multiverb3(Token *token,
 
 	push_token(_t);
 
+	if (changed)
+		*changed = false;
+
 	return token;
 }
-
 
 Token *
 next_token(Token *token)
 {
+	bool	changed;
+
 	if (tokenidx > 0)
 		memcpy(token, &tokenbuf[--tokenidx], sizeof(Token));
 	else
@@ -777,18 +822,93 @@ next_token(Token *token)
 		if (token->type == tt_keyword)
 		{
 			if (token->value == k_GROUP)
-				token = possible_multiverb2(token, k_BY, k_GROUP_BY);
+				/* GROUP BY */
+				token = possible_multiverb2(token, k_BY, k_GROUP_BY, NULL);
 			else if (token->value == k_ORDER)
-				token = possible_multiverb2(token, k_BY, k_ORDER_BY);
+				/* ORDER BY */
+				token = possible_multiverb2(token, k_BY, k_ORDER_BY, NULL);
 			else if (token->value == k_NOT)
-				token = possible_multiverb2(token, k_IN, k_NOT_IN);
+				/* NOT IN */
+				token = possible_multiverb2(token, k_IN, k_NOT_IN, NULL);
 			else if (token->value == k_IS)
 			{
 				bool	changed;
 
+				/* IS NOT NULL */
 				token = possible_multiverb3(token, k_NOT, k_NULL, k_IS_NOT_NULL, &changed);
 				if (!changed)
-					token = possible_multiverb2(token, k_NULL, k_IS_NULL);
+					/* IS NULL */
+					token = possible_multiverb2(token, k_NULL, k_IS_NULL, NULL);
+			}
+			else if (token->value == k_INNER)
+				/* INNER JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_INNER_JOIN, NULL);
+			else if (token->value == k_CROSS)
+				/* CROSS JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_CROSS_JOIN, NULL);
+			else if (token->value == k_OUTER)
+				/* optional OUTER JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_OUTER_JOIN, NULL);
+			else if (token->value == k_LEFT)
+			{
+				/* LEFT JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_LEFT_OUTER_JOIN, &changed);
+				if (!changed)
+					/* LEFT OUTER JOIN */
+					token = possible_multiverb2(token, k_OUTER_JOIN, k_LEFT_OUTER_JOIN, NULL);
+			}
+			else if (token->value == k_RIGHT)
+			{
+				/* RIGHT JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_RIGHT_OUTER_JOIN, &changed);
+				if (!changed)
+					/* RIGHT OUTER JOIN */
+					token = possible_multiverb2(token, k_OUTER_JOIN, k_RIGHT_OUTER_JOIN, NULL);
+			}
+			else if (token->value == k_FULL)
+			{
+				/* FULL JOIN */
+				token = possible_multiverb2(token, k_JOIN, k_FULL_OUTER_JOIN, &changed);
+				if (!changed)
+					/* FULL OUTER JOIN */
+					token = possible_multiverb2(token, k_OUTER_JOIN, k_FULL_OUTER_JOIN, NULL);
+			}
+			else if (token->value == k_NATURAL)
+			{
+				Token	t2, *_t2;
+
+				_t2 = next_token(&t2);
+				if (_t2)
+				{
+					bool	processed = false;
+
+					if (t2.type == tt_keyword && t2.reserved)
+					{
+						switch (t2.value)
+						{
+							case k_JOIN:
+							case k_CROSS_JOIN:
+							case k_FULL_OUTER_JOIN:
+							case k_LEFT_OUTER_JOIN:
+							case k_RIGHT_OUTER_JOIN:
+								{
+									token->value = t2.value;
+									token->reserved = keywords[token->value - 256].reserved;
+									token->str = keywords[token->value - 256].str;
+									token->bytes = strlen(token->str);
+									token->natural_join = true;
+
+									processed = true;
+									break;
+								}
+							default:
+								;
+						}
+					}
+
+					if (!processed)
+						push_token(_t2);
+				}
 			}
 		}
 	}

@@ -8,11 +8,7 @@ static Node * is_expr_in_parenthesis(bool *error);
 static Node * is_function_args(bool *error);
 static Node * is_query(bool *error);
 static Node * is_expr_list(bool *error);
-
-
 static Node * is_operand(bool *error);
-
-
 static Node * new_node();
 
 
@@ -32,6 +28,9 @@ new_node_value(NodeType type, Node *value)
 	result->type = type;
 	result->value = value;
 
+	if (type == n_expr)
+		result->exprtype = expr_generic;
+
 	return result;
 }
 
@@ -43,6 +42,9 @@ new_node_str(NodeType type, Token *token)
 	result->type = type;
 	result->str = token->str;
 	result->bytes = token->bytes;
+
+	if (type == n_expr)
+		result->exprtype = expr_generic;
 
 	return result;
 }
@@ -234,10 +236,6 @@ is_operand(bool *error)
 		return result;
 	ON_ERROR_RETURN();
 
-	if (result = is_negated_operand(error))
-		return result;
-	ON_ERROR_RETURN();
-
 	if (result = is_expr_in_parenthesis(error))
 		return result;
 	ON_ERROR_RETURN();
@@ -331,7 +329,7 @@ is_expr_00(bool *error)
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t.type == tt_operator)
+		if (t.type == tt_operator && !t.comparing_op)
 		{
 			Node   *expr = new_node_str(n_expr, _t);
 
@@ -351,8 +349,7 @@ is_expr_00(bool *error)
 }
 
 /*
- * Add expr IS NULL, expr IS NOT NULL
- *
+ * Add expr IS FALSE, expr IS TRUE, expr IS UNKNOWN
  */
 static Node *
 is_expr_01(bool *error)
@@ -368,25 +365,41 @@ is_expr_01(bool *error)
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (is_keyword(_t, k_IS_NULL) ||
-			is_keyword(_t, k_IS_NOT_NULL))
+		if (is_keyword(_t, k_IS))
 		{
-			Node   *expr = new_node_str(is_keyword(_t, k_IS_NULL) ? n_is_null : n_is_not_null, _t);
+			bool	negate = false;
 
-			expr->value = result;
-			return expr;
+			_t = next_token(&t);
+			ON_EMPTY_RETURN_ERROR();
 
-			ON_ERROR_RETURN();
+			if (is_keyword(_t, k_NOT))
+			{
+				negate = true;
+				_t = next_token(&t);
+				ON_EMPTY_RETURN_ERROR();
+			}
+
+			if (is_keyword(_t, k_UNKNOWN) ||
+				is_keyword(_t, k_FALSE) || is_keyword(_t, k_TRUE))
+			{
+				Node   *expr = new_node_str(n_is, _t);
+
+				expr->value = result;
+				expr->negate = negate;
+				return expr;
+			}
+
 			RETURN_ERROR();
 		}
 
 		push_token(_t);
-		return result;
 	}
+
+	return result;
 }
 
 /*
- * Add operator AND
+ * Add expr IS NULL, expr IS NOT NULL
  *
  */
 static Node *
@@ -403,12 +416,96 @@ is_expr_02(bool *error)
 		_t = next_token(&t);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (is_keyword(_t, k_AND))
+		if (is_keyword(_t, k_IS_NULL) ||
+			is_keyword(_t, k_IS_NOT_NULL))
 		{
-			Node   *expr = new_node_str(n_logical_and, _t);
+			Node   *expr = new_node_str(is_keyword(_t, k_IS_NULL) ? n_is_null : n_is_not_null, _t);
 
 			expr->value = result;
-			if (expr->other = is_expr_02(error))
+			return expr;
+		}
+
+		push_token(_t);
+	}
+
+	return result;
+}
+
+/*
+ * expr BETWEEN expr AND expr
+ */
+static Node *
+is_expr_04(bool *error)
+{
+	Node   *result;
+
+	if (result = is_expr_02(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_BETWEEN))
+		{
+			Node   *expr = new_node_str(n_expr, _t);
+			Node   *lval;
+
+			expr->value = result;
+			expr->exprtype = expr_between;
+
+			lval = is_expr_02(error);
+			ON_ERROR_RETURN();
+
+			_t = next_token(&t);
+			ON_EMPTY_RETURN_ERROR();
+
+			if (is_keyword(_t, k_AND))
+			{
+				expr->other = new_node_str(n_expr,_t);
+				expr->other->value = lval;
+
+				if (expr->other->other = is_expr_02(error))
+					return expr;
+			}
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+	}
+
+	return result;
+}
+
+/*
+ * expr LIKE expr, expr ILIKE expr
+ */
+static Node *
+is_expr_05(bool *error)
+{
+	Node   *result;
+
+	if (result = is_expr_04(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_LIKE) || is_keyword(_t, k_ILIKE))
+		{
+			Node   *expr = new_node_str(n_expr, _t);
+
+			expr->value = result;
+			expr->exprtype = is_keyword(_t, k_LIKE) ? expr_like : expr_ilike;
+
+			if (expr->other = is_expr_04(error))
 				return expr;
 
 			ON_ERROR_RETURN();
@@ -416,8 +513,145 @@ is_expr_02(bool *error)
 		}
 
 		push_token(_t);
-		return result;
 	}
+
+	return result;
+}
+
+/*
+ * expr <> expr
+ */
+static Node *
+is_expr_06(bool *error)
+{
+	Node   *result;
+
+	if (result = is_expr_05(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type == tt_operator && t.comparing_op && !is_operator(_t, "="))
+		{
+			Node   *expr = new_node_str(n_expr, _t);
+
+			expr->value = result;
+			if (expr->other = is_expr_05(error))
+				return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+	}
+
+	return result;
+}
+
+/*
+ * expr = expr
+ */
+static Node *
+is_expr_07(bool *error)
+{
+	Node   *result;
+
+	if (result = is_expr_06(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_operator(_t, "="))
+		{
+			Node   *expr = new_node_str(n_expr, _t);
+
+			expr->value = result;
+			if (expr->other = is_expr_06(error))
+				return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+	}
+
+	return result;
+}
+
+/*
+ * NOT expr
+ */
+static Node *
+is_expr_08(bool *error)
+{
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_NOT))
+	{
+		Node	*result;
+
+		result = is_expr_07(error);
+		ON_ERROR_RETURN();
+
+		if (result)
+		{
+			result->negate = true;
+			return result;
+		}
+	}
+
+	push_token(_t);
+	return is_expr_07(error);
+}
+
+
+/*
+ * Add operator AND
+ *
+ */
+static Node *
+is_expr_09(bool *error)
+{
+	Node	*result;
+
+	if (result = is_expr_08(error))
+	{
+		Token	t, *_t;
+
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_AND))
+		{
+			Node   *expr = new_node_str(n_logical_and, _t);
+
+			expr->value = result;
+			if (expr->other = is_expr_09(error))
+				return expr;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+	}
+
+	return result;
 }
 
 /*
@@ -425,11 +659,11 @@ is_expr_02(bool *error)
  *
  */
 static Node *
-is_expr_03(bool *error)
+is_expr_10(bool *error)
 {
 	Node	*result;
 
-	if (result = is_expr_02(error))
+	if (result = is_expr_09(error))
 	{
 		Token	t, *_t;
 
@@ -443,7 +677,7 @@ is_expr_03(bool *error)
 			Node   *expr = new_node_str(n_logical_or, _t);
 
 			expr->value = result;
-			if (expr->other = is_expr_03(error))
+			if (expr->other = is_expr_10(error))
 				return expr;
 
 			ON_ERROR_RETURN();
@@ -451,11 +685,12 @@ is_expr_03(bool *error)
 		}
 
 		push_token(_t);
-		return result;
 	}
+
+	return result;
 }
 
-#define	is_expr_top(e)		is_expr_03(e)
+#define	is_expr_top(e)		is_expr_10(e)
 
 /*
  * parses a) ( expr ) b) (SELECT ...), c (expr, expr, expr, ...)
@@ -1039,6 +1274,11 @@ debug_display_node(Node *node, int indent)
 		case n_ident:
 		case n_star:
 			debug_display_qident(node);
+			break;
+
+		case n_is:
+			fprintf(stderr, "IS %.*s\n", node->bytes, node->str);
+			debug_display_node(node->value, indent + 4);
 			break;
 
 		case n_function:
