@@ -53,6 +53,28 @@ is_keyword(Token *token, KeywordValue k)
 	return token->type == tt_keyword && token->value == k;
 }
 
+static bool
+is_not_reserved_keyword(Token *token)
+{
+	return token->type == tt_keyword && !token->reserved;
+}
+
+static bool
+is_enhanced_ident(Token *token)
+{
+	return token->type == tt_ident || is_not_reserved_keyword(token);
+}
+
+static bool
+is_operator(Token *token, const char *op)
+{
+	if (token->type == tt_operator &&
+			token->bytes == strlen(op) &&
+			strncmp(token->str, op, token->bytes) == 0)
+		return true;
+	return false;
+}
+
 /*
  * ident.ident.ident[.ident ...]
  *
@@ -65,7 +87,7 @@ is_qualified_ident(bool *error)
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
 
-	if (t.type == tt_ident || (t.type == tt_keyword && !t.reserved))
+	if (is_enhanced_ident(_t))
 	{
 		Token	t2, *_t2;
 		Node	*_node;
@@ -74,7 +96,7 @@ is_qualified_ident(bool *error)
 		_t2 = next_token(&t2);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t2.type == tt_other && t2.value == '.')
+		if (t2.type == tt_dot)
 		{
 			Node   *other;
 
@@ -113,18 +135,18 @@ is_qualified_star(bool *error)
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
 
-	if (t.type == tt_operator && t.bytes == 1 && strncmp(t.str, "*", 1) == 0)
+	if (is_operator(_t, "*"))
 	{
 		return new_node_str(n_star, _t);
 	}
-	else if (t.type == tt_ident || (t.type == tt_keyword && !t.reserved))
+	else if (is_enhanced_ident(_t))
 	{
 		Token	t2, *_t2;
 
 		_t2 = next_token(&t2);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t2.type == tt_other && t2.value == '.')
+		if (t2.type == tt_dot)
 		{
 			Node   *result;
 
@@ -153,8 +175,7 @@ is_signed_operand(bool *error)
 	_t = next_token(&t);
 	ON_EMPTY_RETURN_ERROR();
 
-	if (_t->type == tt_operator && 
-		((strncmp(t.str, "+", 1) == 0 || strncmp(t.str, "-", 1) == 0)))
+	if (is_operator(_t, "+") || is_operator(_t, "-"))
 	{
 		Node	*result;
 
@@ -252,7 +273,6 @@ is_operand(bool *error)
 	push_token(_t);
 	return NULL;
 }
-
 
 /*
  * Operand | Operand op expr
@@ -432,7 +452,6 @@ is_expr_03(bool *error)
 }
 
 #define	is_expr_top(e)		is_expr_03(e)
-
 
 /*
  * parses a) ( expr ) b) (SELECT ...), c (expr, expr, expr, ...)
@@ -621,38 +640,9 @@ is_labeled_expr_list(bool *error)
 	return NULL;
 }
 
-/*
- * SELECT labeled_expr_list
- *
- */
-static Node *
-is_query(bool *error)
-{
-	Token	t, *_t;
-
-	_t = next_token(&t);
-	ON_EMPTY_RETURN_ERROR();
-
-	if (is_keyword(_t, k_SELECT))
-	{
-		Node   *cols = is_labeled_expr_list(error);
-		Node   *result;
-
-		ON_ERROR_RETURN();
-
-		result = new_node();
-		result->type = n_query;
-		result->columns = cols;
-
-		return result;
-	}
-
-	push_token(_t);
-	return NULL;
-}
 
 /*
- * name => 
+ * name =>
  *
  */
 static Node *
@@ -765,6 +755,137 @@ is_function_args(bool *error)
 	push_token(_t);
 	return NULL;
 }
+
+static Node *
+is_relation_source(bool *error)
+{
+	Node   *result;
+
+	result = is_qualified_ident(error);
+	if (result)
+		return result;
+
+	ON_ERROR_RETURN();
+
+	return NULL;
+}
+
+static Node *
+is_relation(bool *error)
+{
+	Node   *rs;
+
+	rs = is_relation_source(error);
+	ON_ERROR_RETURN();
+
+	if (rs)
+	{
+		Node   *label;
+
+		label = is_label(error);
+		ON_ERROR_RETURN();
+
+		if (label)
+		{
+			label->value = rs;
+			return label;
+		}
+
+		return rs;
+	}
+
+	return NULL;
+}
+
+static Node *
+is_relation_expr(bool *error)
+{
+	Node   *result;
+
+	result = is_relation(error);
+	if (result)
+		return result;
+	ON_ERROR_RETURN();
+
+	return NULL;
+}
+
+static Node *
+is_relation_expr_list(bool *error)
+{
+	Node   *re;
+
+	re = is_relation_expr(error);
+	if (re)
+	{
+		Token	t, *_t;
+		Node   *result;
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		result = new_node_value(n_list, re);
+		if (t.type == tt_comma)
+		{
+			if (result->other = is_relation_expr_list(error))
+				return result;
+
+			ON_ERROR_RETURN();
+			RETURN_ERROR();
+		}
+
+		push_token(_t);
+		return result;
+	}
+
+	return NULL;
+}
+
+
+/*
+ * SELECT labeled_expr_list
+ *
+ */
+static Node *
+is_query(bool *error)
+{
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_SELECT))
+	{
+		Node   *cols = is_labeled_expr_list(error);
+		Node   *result;
+
+		ON_ERROR_RETURN();
+
+		result = new_node();
+		result->type = n_query;
+		result->columns = cols;
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_FROM))
+		{
+			result->from = is_relation_expr_list(error);
+			ON_ERROR_RETURN();
+
+			if (!result->from)
+				RETURN_ERROR();
+		}
+		else
+			push_token(_t);
+
+		return result;
+	}
+
+	push_token(_t);
+	return NULL;
+}
+
 
 static void
 debug_display_qident(Node *node)
@@ -952,6 +1073,7 @@ debug_display_node(Node *node, int indent)
 		case n_query:
 			fprintf(stderr, "*** QUERY ***\n");
 			debug_display_node(node->columns, indent + 4);
+			fprintf(stderr, "%*s%s", indent, "", "FROM\n");
 			debug_display_node(node->from, indent + 4);
 			fprintf(stderr, "%*s%s", indent, "", "*** query ***");
 

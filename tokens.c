@@ -333,7 +333,7 @@ _next_token(Token *token)
 
 		if (was_dot && bytes == 1)
 		{
-			token->type = tt_other;
+			token->type = tt_dot;
 			token->value = '.';
 		}
 		else

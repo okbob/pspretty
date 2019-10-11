@@ -20,6 +20,7 @@ typedef enum
 	tt_other,
 	tt_operator,
 	tt_cast_operator,
+	tt_dot,
 	tt_comma,
 	tt_named_expr,
 	tt_semicolon,
