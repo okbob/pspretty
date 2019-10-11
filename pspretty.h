@@ -23,8 +23,7 @@ typedef enum
 	tt_dot,
 	tt_comma,
 	tt_named_expr,
-	tt_semicolon,
-	tt_null
+	tt_semicolon
 } TokenType;
 
 
@@ -52,6 +51,7 @@ typedef enum
 	k_DELETE,
 	k_DESC,
 	k_EXISTS,
+	k_FALSE,
 	k_FROM,
 	k_GROUP,
 	k_GROUP_BY,
@@ -71,6 +71,7 @@ typedef enum
 	k_ORDER,
 	k_ORDER_BY,
 	k_SELECT,
+	k_TRUE,
 	k_VALUES,
 	k_WHERE,
 	k_WITH,
@@ -79,6 +80,8 @@ typedef enum
 typedef enum
 {
 	n_null,
+	n_true,
+	n_false,
 	n_numeric,
 	n_string,
 	n_function,

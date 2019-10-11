@@ -263,11 +263,15 @@ is_operand(bool *error)
 
 	if (is_keyword(_t, k_NULL))
 		return new_node_str(n_null, _t);
+	else if (is_keyword(_t, k_FALSE))
+		return new_node_str(n_false, _t);
+	else if (is_keyword(_t, k_TRUE))
+		return new_node_str(n_true, _t);
 	else if (t.type == tt_numeric)
 		return new_node_str(n_numeric, _t);
 	else if (t.type == tt_string)
 		return new_node_str(n_string, _t);
-	else if (t.type == tt_keyword && !t.reserved)
+	else if (is_not_reserved_keyword(_t))
 		return new_node_str(n_string, _t);
 
 	push_token(_t);
@@ -879,6 +883,20 @@ is_query(bool *error)
 		else
 			push_token(_t);
 
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_WHERE))
+		{
+			result->where = is_expr_top(error);
+			ON_ERROR_RETURN();
+
+			if (!result->where)
+				RETURN_ERROR();
+		}
+		else
+			push_token(_t);
+
 		return result;
 	}
 
@@ -1013,6 +1031,8 @@ debug_display_node(Node *node, int indent)
 		case n_numeric:
 		case n_string:
 		case n_null:
+		case n_false:
+		case n_true:
 			fprintf(stderr, "%.*s", node->bytes, node->str);
 			break;
 
@@ -1075,8 +1095,9 @@ debug_display_node(Node *node, int indent)
 			debug_display_node(node->columns, indent + 4);
 			fprintf(stderr, "%*s%s", indent, "", "FROM\n");
 			debug_display_node(node->from, indent + 4);
+			fprintf(stderr, "%*s%s", indent, "", "WHERE\n");
+			debug_display_node(node->where, indent + 4);
 			fprintf(stderr, "%*s%s", indent, "", "*** query ***");
-
 			break;
 
 		default:

@@ -35,6 +35,7 @@ KeywordPair keywords[] = {
   { k_DELETE, "delete", false },
   { k_DESC, "desc", false },
   { k_EXISTS, "exists", false },
+  { k_FALSE, "false", true },
   { k_FROM, "from", true },
   { k_GROUP, "group", false },
   { k_GROUP_BY, "group by", true },
@@ -54,6 +55,7 @@ KeywordPair keywords[] = {
   { k_ORDER, "order", false },
   { k_ORDER_BY, "order by", true },
   { k_SELECT, "select", true },
+  { k_TRUE, "true", true },
   { k_VALUES, "values", false },
   { k_WHERE, "where", true },
   { k_WITH, "with", false }
