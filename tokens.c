@@ -30,15 +30,16 @@ static bool		force8bit;
 KeywordPair keywords[] = {
   { k_AND, "and", true },
   { k_AS, "as", false },
-  { k_ASC, "asc", false },
+  { k_ASC, "asc", true },
   { k_BETWEEN, "between", false },
   { k_BY, "by", false },
   { k_CROSS, "cross", false },
   { k_CROSS_JOIN, "cross_join", true },
   { k_DELETE, "delete", false },
-  { k_DESC, "desc", false },
+  { k_DESC, "desc", true },
   { k_EXISTS, "exists", false },
   { k_FALSE, "false", true },
+  { k_FIRST, "first", false },
   { k_FROM, "from", true },
   { k_FULL, "full", false },
   { k_FULL_OUTER_JOIN, "full outer join", true },
@@ -56,6 +57,7 @@ KeywordPair keywords[] = {
   { k_IS_NOT_NULL, "is not null", true },
   { k_IS_NULL, "is null", true },
   { k_JOIN, "join", false },
+  { k_LAST, "last", false },
   { k_LEFT, "left", false },
   { k_LEFT_OUTER_JOIN, "left outer join", true },
   { k_LIKE, "like", false },
@@ -64,6 +66,10 @@ KeywordPair keywords[] = {
   { k_NOT, "not", true },
   { k_NOT_IN, "not in", true },
   { k_NULL, "null", true },
+  { k_NULLS, "nulls", false },
+  { k_NULLS_FIRST, "nulls first", true },
+  { k_NULLS_LAST, "nulls last", true },
+  { k_OFFSET, "offset", true },
   { k_ON, "on", false },
   { k_OR, "or", true },
   { k_ORDER, "order", false },
@@ -75,6 +81,7 @@ KeywordPair keywords[] = {
   { k_SELECT, "select", true },
   { k_TRUE, "true", true },
   { k_UNKNOWN, "unknown", false },
+  { k_USING, "using", false },
   { k_VALUES, "values", false },
   { k_WHERE, "where", true },
   { k_WITH, "with", false }
@@ -830,6 +837,12 @@ next_token(Token *token)
 			else if (token->value == k_NOT)
 				/* NOT IN */
 				token = possible_multiverb2(token, k_IN, k_NOT_IN, NULL);
+			else if (token->value == k_NULLS)
+			{
+				token = possible_multiverb2(token, k_FIRST, k_NULLS_FIRST, &changed);
+				if (!changed)
+					token = possible_multiverb2(token, k_LAST, k_NULLS_LAST, NULL);
+			}
 			else if (token->value == k_IS)
 			{
 				bool	changed;
@@ -957,13 +970,14 @@ token_type_name(Token *token)
 	}
 }
 
-void
-debug_print_token(Token *token)
+static void
+debug_print_token_indent(Token *token, int indent)
 {
 
 	if (token)
 	{
-		fprintf(stderr, "DEBUG: token: %-8s, content:\"%.*s\"",
+		fprintf(stderr, "DEBUG: %*s", indent, "");
+		fprintf(stderr, "token: %8s, content:\"%.*s\"",
 							token_type_name(token),
 							token->bytes,
 							token->str);
@@ -978,4 +992,18 @@ debug_print_token(Token *token)
 	}
 	else
 		fprintf(stderr, "DEBUG: null\n");
+}
+
+void
+debug_print_token(Token *token)
+{
+	debug_print_token_indent(token, 0);
+}
+
+void
+push_token_debug(Token *token, char *str)
+{
+	fprintf(stderr, "DEBUG: PUSH_TOKEN \"%s\"\n", str);
+	debug_print_token_indent(token, 4);
+	push_token(token);
 }

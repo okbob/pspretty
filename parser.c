@@ -8,8 +8,13 @@ static Node * is_expr_in_parenthesis(bool *error);
 static Node * is_function_args(bool *error);
 static Node * is_query(bool *error);
 static Node * is_expr_list(bool *error);
+
+static bool is_join_keyword(Token *t);
+static Node * is_relation_expr(bool *error, bool join_required, Node *leftrel);
+static Node * is_relation_expr_list(bool *error);
+
 static Node * is_operand(bool *error);
-static Node * new_node();
+static Node * new_node(NodeType type);
 
 
 #define	ON_ERROR_RETURN()			do { if (*error) { return NULL;} } while (0)
@@ -23,11 +28,9 @@ NodeAllocator	   *current_allocator;
 static Node *
 new_node_value(NodeType type, Node *value)
 {
-	Node *result = new_node();
+	Node *result = new_node(type);
 
-	result->type = type;
 	result->value = value;
-
 	if (type == n_expr)
 		result->exprtype = expr_generic;
 
@@ -37,9 +40,8 @@ new_node_value(NodeType type, Node *value)
 static Node *
 new_node_str(NodeType type, Token *token)
 {
-	Node *result = new_node();
+	Node *result = new_node(type);
 
-	result->type = type;
 	result->str = token->str;
 	result->bytes = token->bytes;
 
@@ -187,7 +189,12 @@ is_signed_operand(bool *error)
 		if (result)
 		{
 			if (strncmp(t.str, "-", 1) == 0)
+			{
+				if (result->type != n_expr && result->type != n_expr_wrapper)
+					result = new_node_value(n_expr_wrapper, result);
+
 				result->negative = !result->negative;
+			}
 			return result;
 		}
 	}
@@ -217,6 +224,9 @@ is_negated_operand(bool *error)
 
 		if (result)
 		{
+			if (result->type != n_expr && result->type != n_expr_wrapper)
+				result = new_node_value(n_expr_wrapper, result);
+
 			result->negate = true;
 			return result;
 		}
@@ -746,6 +756,9 @@ is_expr_in_parenthesis(bool *error)
 	if (composite)
 		return composite;
 
+	if (expr->type != n_expr && expr->type != n_expr_wrapper)
+		expr = new_node_value(n_expr_wrapper, expr);
+
 	expr->parenthesis = true;
 	return expr;
 }
@@ -806,15 +819,13 @@ is_label(bool *error)
 		_t2 = next_token(&t2);
 		ON_EMPTY_RETURN_ERROR();
 
-		if (t2.type == tt_ident ||
-				(t2.type == tt_keyword && !t2.reserved))
+		if (is_enhanced_ident(_t2))
 			return new_node_str(n_labeled_expr, _t2);
 
 		RETURN_ERROR();
 	}
 
-	if (t.type == tt_ident ||
-			(t.type == tt_keyword && !t.reserved))
+	if (is_enhanced_ident(_t))
 		return new_node_str(n_labeled_expr, _t);
 
 	push_token(_t);
@@ -995,58 +1006,316 @@ is_function_args(bool *error)
 	return NULL;
 }
 
+/*****************************************************************
+ * Routines related to FROM clause
+ *
+ *****************************************************************/
+
 static Node *
 is_relation_source(bool *error)
 {
 	Node   *result;
+	Token	t, *_t;
 
-	result = is_qualified_ident(error);
-	if (result)
-		return result;
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
 
-	ON_ERROR_RETURN();
+	if (t.type == tt_lparent)
+	{
+		Node   *label;
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_keyword(_t, k_SELECT))
+		{
+			push_token(_t);
+			result = is_query(error);
+		}
+		else
+		{
+			push_token(_t);
+			result = is_relation_expr(error, true, NULL);
+			result->relexpr_parenthesis = true;
+		}
+		ON_ERROR_RETURN();
+
+		/* empty content is not allowed */
+		if (!result)
+			RETURN_ERROR();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type != tt_rparent)
+		{
+			fprintf(stderr, "unclosed parenthesis\n");
+			RETURN_ERROR();
+		}
+	}
+	else
+	{
+		push_token(_t);
+		result = is_qualified_ident(error);
+		ON_ERROR_RETURN();
+	}
+
+	return result;
+}
+
+/*
+ * [ AS ] label
+ *
+ */
+static Node *
+is_relation_label(bool *error)
+{
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (t.type == tt_keyword && t.value == k_AS)
+	{
+		Token	t2, *_t2;
+
+		_t2 = next_token(&t2);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_enhanced_ident(_t2))
+			return new_node_str(n_labeled_expr, _t2);
+
+		RETURN_ERROR();
+	}
+
+	/* protect context important keywords JOIN, ON in this context */
+	if (!is_keyword(_t, k_ON)
+			&& !is_keyword(_t, k_USING)
+			&& !is_join_keyword(_t)
+			&& is_enhanced_ident(_t))
+		return new_node_str(n_labeled_expr, _t);
+
+	push_token(_t);
 
 	return NULL;
 }
 
+/*
+ * Is labeled (optional) relation
+ *
+ */
 static Node *
 is_relation(bool *error)
 {
-	Node   *rs;
+	Node   *result;
 
-	rs = is_relation_source(error);
+	result = is_relation_source(error);
 	ON_ERROR_RETURN();
 
-	if (rs)
+	if (result)
 	{
 		Node   *label;
 
-		label = is_label(error);
+		label = is_relation_label(error);
 		ON_ERROR_RETURN();
 
 		if (label)
 		{
-			label->value = rs;
-			return label;
+			label->value = result;
+			result = label;
 		}
-
-		return rs;
 	}
 
-	return NULL;
+	return result;
 }
 
+/*
+ * Returns true when keyword is one of JOIN keywords
+ *
+ */
+static bool
+is_join_keyword(Token *t)
+{
+	if (t->type == tt_keyword)
+	{
+		switch (t->value)
+		{
+			case k_JOIN:
+			case k_INNER_JOIN:
+			case k_CROSS_JOIN:
+			case k_LEFT_OUTER_JOIN:
+			case k_RIGHT_OUTER_JOIN:
+			case k_FULL_OUTER_JOIN:
+				return true;
+			default:
+				;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * Returns ident list
+ *
+ */
 static Node *
-is_relation_expr(bool *error)
+is_ident_list(bool *error)
+{
+	Token	t, *_t;
+	Node   *result = NULL;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_enhanced_ident(_t))
+	{
+		Node    *ident = new_node_str(n_ident, _t);
+
+		result = new_node_value(n_list, ident);
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type == tt_comma)
+		{
+			result->other = is_relation_expr_list(error);
+			ON_ERROR_RETURN();
+			if (!result->other)
+				RETURN_ERROR();
+		}
+		else
+			push_token(_t);
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+/*
+ * Returns ident list in parenthesis
+ *
+ */
+static Node *
+is_ident_p_list(bool *error)
+{
+	Token	t, *_t;
+	Node   *result = NULL;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (t.type == tt_lparent)
+	{
+		result = is_ident_list(error);
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type != tt_rparent)
+		{
+			fprintf(stderr, "unclosed parenthesis\n");
+			RETURN_ERROR();
+		}
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+/*
+ * left_rel JOIN right_rel ON expr
+ *
+ *
+ */
+static Node *
+is_relation_expr(bool *error, bool join_required, Node *leftrel)
 {
 	Node   *result;
+	bool	parenthesis = false;
+	Token	t, *_t;
 
-	result = is_relation(error);
+	if (!leftrel)
+	{
+		result = is_relation(error);
+		ON_ERROR_RETURN();
+	}
+	else
+		result = leftrel;
+
 	if (result)
-		return result;
-	ON_ERROR_RETURN();
+	{
+		Token	t, *_t;
 
-	return NULL;
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (is_join_keyword(_t))
+		{
+			Node   *expr = new_node(n_join);
+
+			expr->left = result;
+			expr->jointype = t.value;
+			expr->is_natural = t.natural_join;
+
+			expr->right = is_relation_expr(error, false, NULL);
+			ON_ERROR_RETURN();
+
+			if (expr->right)
+			{
+				if (!expr->is_natural && expr->jointype != k_CROSS_JOIN)
+				{
+					_t = next_token(&t);
+					ON_EMPTY_RETURN_ERROR();
+
+					if (is_keyword(_t, k_ON))
+					{
+						expr->onexpr = is_expr_top(error);
+						ON_ERROR_RETURN();
+						if (!expr->onexpr)
+							RETURN_ERROR();
+					}
+					else if (is_keyword(_t, k_USING))
+					{
+						expr->using = is_ident_p_list(error);
+						ON_ERROR_RETURN();
+						if (!expr->using)
+							RETURN_ERROR();
+					}
+					else
+						RETURN_ERROR();
+				}
+
+				_t = next_token(&t);
+				ON_EMPTY_RETURN_ERROR();
+
+				if (is_join_keyword(_t))
+				{
+					push_token(_t);
+					expr = is_relation_expr(error, true, expr);
+				}
+				else
+					push_token(_t);
+			}
+			else
+				RETURN_ERROR();
+
+			result = expr;
+		}
+		else
+		{
+			push_token(_t);
+			if (join_required)
+				RETURN_ERROR();
+		}
+	}
+	else
+		RETURN_ERROR();
+
+	return result;
 }
 
 static Node *
@@ -1054,7 +1323,7 @@ is_relation_expr_list(bool *error)
 {
 	Node   *re;
 
-	re = is_relation_expr(error);
+	re = is_relation_expr(error, false, NULL);
 	if (re)
 	{
 		Token	t, *_t;
@@ -1080,6 +1349,202 @@ is_relation_expr_list(bool *error)
 	return NULL;
 }
 
+static bool
+check_order_by_flags(Token *token, Node *node, bool *error)
+{
+	if (is_keyword(token, k_DESC))
+	{
+		if (node->asc)
+			RETURN_ERROR();
+		node->desc = true;
+		return true;
+	}
+	else if (is_keyword(token, k_ASC))
+	{
+		if (node->desc)
+			RETURN_ERROR();
+		node->asc = true;
+		return true;
+	}
+	else if (is_keyword(token, k_NULLS_FIRST))
+	{
+		if (node->nulls_last)
+			RETURN_ERROR();
+		node->nulls_first = true;
+		return true;
+	}
+	else if (is_keyword(token, k_NULLS_LAST))
+	{
+		if (node->nulls_first)
+			RETURN_ERROR();
+		node->nulls_last = true;
+		return true;
+	}
+	else
+		return false;
+}
+
+/*
+ * expr [ DESC | ASC ] [ NULLS FIRST | NULLS LAST ]
+ *
+ */
+static Node *
+is_order_by_expr(bool *error)
+{
+	Node   *result;
+	Token	t, *_t;
+
+	result = is_expr_top(error);
+	ON_ERROR_RETURN();
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	/* we should to assign following flags to expr only */
+	if (result->type != n_expr && result->type != n_expr_wrapper)
+		result = new_node_value(n_expr_wrapper, result);
+
+	if (check_order_by_flags(_t, result, error))
+	{
+		ON_ERROR_RETURN();
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (!check_order_by_flags(_t, result, error))
+			push_token(_t);
+
+		ON_ERROR_RETURN();
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+static Node *
+is_order_by_expr_list(bool *error)
+{
+	Node   *expr, *result = NULL;
+	Token	t, *_t;
+
+	expr = is_order_by_expr(error);
+	ON_ERROR_RETURN();
+
+	if (expr)
+	{
+		Token	t, *_t;
+
+		result = new_node_value(n_list, expr);
+
+		_t = next_token(&t);
+		ON_EMPTY_RETURN_ERROR();
+
+		if (t.type == tt_comma)
+		{
+			result->other = is_order_by_expr_list(error);
+			ON_ERROR_RETURN();
+			if (!result->other)
+				RETURN_ERROR();
+		}
+		else
+			push_token(_t);
+	}
+
+	return result;
+}
+
+static Node *
+is_order_by_clause(bool *error)
+{
+	Node *result = NULL;
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_ORDER_BY))
+	{
+		result = is_order_by_expr_list(error);
+		ON_ERROR_RETURN();
+
+		if (!result)
+			RETURN_ERROR();
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+static Node *
+is_from_clause(bool *error)
+{
+	Node *result = NULL;
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_FROM))
+	{
+		result = is_relation_expr_list(error);
+		ON_ERROR_RETURN();
+
+		if (!result)
+			RETURN_ERROR();
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+static Node *
+is_expr_clause(bool *error, KeywordValue req)
+{
+	Node *result = NULL;
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, req))
+	{
+		result = is_expr_top(error);
+		ON_ERROR_RETURN();
+
+		if (!result)
+			RETURN_ERROR();
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
+
+static Node *
+is_group_by_clause(bool *error)
+{
+	Node *result = NULL;
+	Token	t, *_t;
+
+	_t = next_token(&t);
+	ON_EMPTY_RETURN_ERROR();
+
+	if (is_keyword(_t, k_GROUP_BY))
+	{
+		result = is_expr_list(error);
+		ON_ERROR_RETURN();
+
+		if (!result)
+			RETURN_ERROR();
+	}
+	else
+		push_token(_t);
+
+	return result;
+}
 
 /*
  * SELECT labeled_expr_list
@@ -1088,6 +1553,7 @@ is_relation_expr_list(bool *error)
 static Node *
 is_query(bool *error)
 {
+	Node   *result = NULL;
 	Token	t, *_t;
 
 	_t = next_token(&t);
@@ -1096,47 +1562,37 @@ is_query(bool *error)
 	if (is_keyword(_t, k_SELECT))
 	{
 		Node   *cols = is_labeled_expr_list(error);
-		Node   *result;
 
 		ON_ERROR_RETURN();
 
-		result = new_node();
-		result->type = n_query;
+		result = new_node(n_query);
 		result->columns = cols;
 
-		_t = next_token(&t);
-		ON_EMPTY_RETURN_ERROR();
+		result->from = is_from_clause(error);
+		ON_ERROR_RETURN();
 
-		if (is_keyword(_t, k_FROM))
-		{
-			result->from = is_relation_expr_list(error);
-			ON_ERROR_RETURN();
+		result->where = is_expr_clause(error, k_WHERE);
+		ON_ERROR_RETURN();
 
-			if (!result->from)
-				RETURN_ERROR();
-		}
-		else
-			push_token(_t);
+		result->group_by = is_group_by_clause(error);
+		ON_ERROR_RETURN();
 
-		_t = next_token(&t);
-		ON_EMPTY_RETURN_ERROR();
+		result->having = is_expr_clause(error, k_HAVING);
+		ON_ERROR_RETURN();
 
-		if (is_keyword(_t, k_WHERE))
-		{
-			result->where = is_expr_top(error);
-			ON_ERROR_RETURN();
+		result->order_by = is_order_by_clause(error);
+		ON_ERROR_RETURN();
 
-			if (!result->where)
-				RETURN_ERROR();
-		}
-		else
-			push_token(_t);
+		result->limit = is_expr_clause(error, k_LIMIT);
+		ON_ERROR_RETURN();
 
-		return result;
+		result->offset = is_expr_clause(error, k_OFFSET);
+		ON_ERROR_RETURN();
 	}
+	else
+		push_token(_t);
 
-	push_token(_t);
-	return NULL;
+	return result;
 }
 
 
@@ -1187,7 +1643,7 @@ init_node_allocator()
 }
 
 static Node *
-new_node()
+new_node(NodeType type)
 {
 	Node *result;
 
@@ -1200,6 +1656,7 @@ new_node()
 	}
 
 	result = &current_allocator->nodes[current_allocator->used++];
+	result->type = type;
 	return result;
 }
 
@@ -1253,13 +1710,17 @@ debug_display_node(Node *node, int indent)
 {
 	if (!node)
 	{
-		fprintf(stderr, "%*s%s", indent, "", "node is null\n");
+		fprintf(stderr, "%*s%s", indent, "", "** NULL node **\n");
 		return;
 	}
 
 	fprintf(stderr, "%*s", indent, "");
-	fprintf(stderr, "%s", node->negate ? "NOT " : "");
-	fprintf(stderr, "%s", node->negative ? "-" : "");
+
+	if (node->type != n_join && node->type != n_query)
+	{
+		fprintf(stderr, "%s", node->negate ? "NOT " : "");
+		fprintf(stderr, "%s", node->negative ? "-" : "");
+	}
 
 	switch (node->type)
 	{
@@ -1269,11 +1730,13 @@ debug_display_node(Node *node, int indent)
 		case n_false:
 		case n_true:
 			fprintf(stderr, "%.*s", node->bytes, node->str);
+			fprintf(stderr, "\n");
 			break;
 
 		case n_ident:
 		case n_star:
 			debug_display_qident(node);
+			fprintf(stderr, "\n");
 			break;
 
 		case n_is:
@@ -1285,7 +1748,7 @@ debug_display_node(Node *node, int indent)
 			debug_display_qident(node->other);
 			fprintf(stderr, "(\n");
 			debug_display_node(node->value, indent + 4);
-			fprintf(stderr, "%*s)", indent, "");
+			fprintf(stderr, "%*s)\n", indent, "");
 			break;
 
 		case n_named_expr:
@@ -1301,7 +1764,7 @@ debug_display_node(Node *node, int indent)
 		case n_composite:
 			fprintf(stderr, "C(\n");
 			debug_display_node(node->value, indent + 4);
-			fprintf(stderr, "%*s%s", indent, "", ")");
+			fprintf(stderr, "%*s%s\n", indent, "", ")");
 			break;
 
 		case n_list:
@@ -1311,7 +1774,7 @@ debug_display_node(Node *node, int indent)
 				debug_display_node(node->value, indent + 4);
 				node = node->other;
 			} while (node);
-			fprintf(stderr, "%*s}", indent, "");
+			fprintf(stderr, "%*s}\n", indent, "");
 			break;
 
 		case n_is_null:
@@ -1323,26 +1786,119 @@ debug_display_node(Node *node, int indent)
 		case n_expr:
 		case n_logical_and:
 		case n_logical_or:
+		case n_expr_wrapper:
 			fprintf(stderr, "%s", node->parenthesis ? "(" : "");
-			fprintf(stderr, "\"%.*s\"\n", node->bytes, node->str);
+
+			if (node->type != n_expr_wrapper)
+				fprintf(stderr, "\"%.*s\"\n", node->bytes, node->str);
+			else
+				fprintf(stderr, "##>\n");
+
 			debug_display_node(node->value, indent + 4);
-			debug_display_node(node->other, indent + 4);
-			fprintf(stderr, "%*s%s", indent, "", node->parenthesis ? ")" : "");
+
+			if (node->type != n_expr_wrapper)
+				debug_display_node(node->other, indent + 4);
+
+			if (node->asc)
+				fprintf(stderr, "%*sASC\n", indent, "");
+			if (node->desc)
+				fprintf(stderr, "%*sDESC\n", indent, "");
+			if (node->nulls_first)
+				fprintf(stderr, "%*sNULLS FIRST\n", indent, "");
+			if (node->nulls_last)
+				fprintf(stderr, "%*sNULLS LAST\n", indent, "");
+			if (node->parenthesis)
+				fprintf(stderr, "%*s)\n", indent, "");
 			break;
 
 		case n_query:
-			fprintf(stderr, "*** QUERY ***\n");
+			fprintf(stderr, "SELECT\n");
 			debug_display_node(node->columns, indent + 4);
-			fprintf(stderr, "%*s%s", indent, "", "FROM\n");
-			debug_display_node(node->from, indent + 4);
-			fprintf(stderr, "%*s%s", indent, "", "WHERE\n");
-			debug_display_node(node->where, indent + 4);
-			fprintf(stderr, "%*s%s", indent, "", "*** query ***");
+			if (node->from)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "FROM\n");
+				debug_display_node(node->from, indent + 4);
+			}
+			if (node->where)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "WHERE\n");
+				debug_display_node(node->where, indent + 4);
+			}
+			if (node->group_by)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "GROUP BY\n");
+				debug_display_node(node->group_by, indent + 4);
+			}
+			if (node->having)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "HAVING\n");
+				debug_display_node(node->having, indent + 4);
+			}
+			if (node->order_by)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "ORDER BY\n");
+				debug_display_node(node->order_by, indent + 4);
+			}
+			if (node->limit)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "LIMIT\n");
+				debug_display_node(node->limit, indent + 4);
+			}
+			if (node->offset)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "OFFSET\n");
+				debug_display_node(node->offset, indent + 4);
+			}
+			break;
+
+		case n_join:
+			if (node->relexpr_parenthesis)
+			{
+				fprintf(stderr, "(\n");
+				indent += 4;
+				fprintf(stderr, "%*s", indent, "");
+			}
+
+			fprintf(stderr, "%s", node->is_natural ? "NATURAL " : "");
+			switch (node->jointype)
+			{
+				case k_JOIN:
+				case k_INNER_JOIN:
+					fprintf(stderr, "INNER JOIN\n");
+					break;
+				case k_CROSS_JOIN:
+					fprintf(stderr, "CROSS JOIN\n");
+					break;
+				case k_LEFT_OUTER_JOIN:
+					fprintf(stderr, "LEFT OUTER JOIN\n");
+					break;
+				case k_RIGHT_OUTER_JOIN:
+					fprintf(stderr, "RIGHT OUTER JOIN\n");
+					break;
+				case k_FULL_OUTER_JOIN:
+					fprintf(stderr, "FULL OUTER JOIN\n");
+					break;
+			}
+
+			debug_display_node(node->left, indent + 4);
+			debug_display_node(node->right, indent + 4);
+
+			if (node->onexpr)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "ON\n");
+				debug_display_node(node->onexpr, indent + 4);
+			}
+			else if (node->using)
+			{
+				fprintf(stderr, "%*s%s", indent, "", "USING\n");
+				debug_display_node(node->using, indent + 4);
+			}
+
+			if (node->relexpr_parenthesis)
+				fprintf(stderr, "%*s%s", indent - 4, "", ")\n");
 			break;
 
 		default:
 			fprintf(stderr, "unknown type: %d\n", node->type);
 	}
-
-	fprintf(stderr, "\n");
 }

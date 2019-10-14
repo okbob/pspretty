@@ -57,6 +57,7 @@ typedef enum
 	k_DESC,
 	k_EXISTS,
 	k_FALSE,
+	k_FIRST,
 	k_FROM,
 	k_FULL,
 	k_FULL_OUTER_JOIN,
@@ -74,6 +75,7 @@ typedef enum
 	k_IS_NOT_NULL,
 	k_IS_NULL,
 	k_JOIN,
+	k_LAST,
 	k_LEFT,
 	k_LEFT_OUTER_JOIN,
 	k_LIKE,
@@ -82,6 +84,10 @@ typedef enum
 	k_NOT,
 	k_NOT_IN,
 	k_NULL,
+	k_NULLS,
+	k_NULLS_FIRST,
+	k_NULLS_LAST,
+	k_OFFSET,
 	k_ON,
 	k_OR,
 	k_ORDER,
@@ -93,6 +99,7 @@ typedef enum
 	k_SELECT,
 	k_TRUE,
 	k_UNKNOWN,
+	k_USING,
 	k_VALUES,
 	k_WHERE,
 	k_WITH,
@@ -109,6 +116,7 @@ typedef enum
 	n_ident,
 	n_star,
 	n_expr,
+	n_expr_wrapper,
 	n_named_expr,
 	n_labeled_expr,
 	n_list,
@@ -118,7 +126,8 @@ typedef enum
 	n_is_not_null,
 	n_query,
 	n_composite,
-	n_is
+	n_is,
+	n_join
 } NodeType;
 
 typedef enum
@@ -138,9 +147,13 @@ typedef struct _node
 			struct _node *other;
 			char   *str;
 			int		bytes;
-			bool	negative;
-			bool	negate;
-			bool	parenthesis;
+			bool	negative;		/* - expr */
+			bool	negate;			/* NOT expr */
+			bool	parenthesis;	/* (expr) */
+			bool	desc;			/* ORDER BY DESC */
+			bool	asc;			/* ORDER BY ASC */
+			bool	nulls_first;	/* ORDER BY NULLS FIRST */
+			bool	nulls_last;		/* ORDER BY NULLS LAST */
 			SpecialExprType exprtype;
 		};
 		struct {
@@ -152,6 +165,15 @@ typedef struct _node
 			struct _node *order_by;
 			struct _node *offset;
 			struct _node *limit;
+		};
+		struct {
+			struct _node *left;
+			struct _node *right;
+			struct _node *onexpr;
+			struct _node *using;
+			KeywordValue jointype;
+			bool	is_natural;
+			bool	relexpr_parenthesis;
 		};
 	};
 } Node;
@@ -168,6 +190,8 @@ extern void init_lexer(char *str, bool _force8bit);
 extern Token *next_token(Token *token);
 extern void push_token(Token *token);
 extern void debug_print_token(Token *token);
+extern void push_token_debug(Token *token, char *str);
+
 extern Node *parser(char *str, bool force8bit);
 extern void out_of_memory();
 
